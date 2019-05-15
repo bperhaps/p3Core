@@ -3,6 +3,7 @@ package work
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 )
 
 const (
@@ -18,10 +19,11 @@ type Work struct {
 	TimeLimit     int      `json:"timeLimit"`
 	InputList     []string `json:"inputList"`
 	OutputList    []string `json:"outputList"`
+	Mode          int      `json:"mode"`
 
 	binaryPath string
-
-	execCmd []string
+	execResult chan interface{}
+	cmdList    []*exec.Cmd
 }
 
 func NewWork(jsonData []byte) *Work {
@@ -39,10 +41,12 @@ func NewWork(jsonData []byte) *Work {
 		os.MkdirAll(binaryPath, os.ModePerm)
 	}
 
-	work := &Work{}
+	work := &Work{
+		binaryPath: "/binary",
+		execResult: make(chan interface{}),
+		cmdList:    []*exec.Cmd{},
+	}
 	json.Unmarshal(jsonData, &work)
-
-	work.binaryPath = binaryPath
 
 	return work
 }

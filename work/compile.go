@@ -1,43 +1,40 @@
 package work
 
 import (
-	"errors"
-	"io"
 	"io/ioutil"
+	"log"
 	"os"
 	"os/exec"
 )
 
-func compile(w *Work) (bool, error) {
+func compile(w *Work) *rErr {
 
 	os.MkdirAll(w.binaryPath, os.ModePerm)
 	outputPath := w.binaryPath + "main"
 
-	src := "test.c"
+	src := "source/test.c"
 
 	var compileCmd *exec.Cmd
-	var compileErr io.ReadCloser
 
 	switch w.Language {
 	case "c":
 		compileCmd = exec.Command("gcc", src, "-w", "-o", outputPath)
 	}
 
-	compileErr, _ = compileCmd.StderrPipe()
+	compileErr, err := compileCmd.StderrPipe()
+	if err != nil {
+		log.Panic(err)
+	}
 
 	compileCmd.Start()
 
-	errorByte, _ := ioutil.ReadAll(compileErr)
-	if len(errorByte) != 0 {
-		return false, errors.New(string(errorByte))
+	errMsg, _ := ioutil.ReadAll(compileErr)
+	if len(errMsg) != 0 {
+		return Error_R(-1, CompileErr, errMsg)
 	}
 
 	compileCmd.Wait()
 
-	if _, err := os.Stat(outputPath); err != nil {
-		return false, errors.New("binary file not exist.")
-	}
-
-	return true, nil
+	return nil
 
 }

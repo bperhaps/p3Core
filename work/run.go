@@ -3,28 +3,55 @@ package work
 import (
 	"bufio"
 	"bytes"
-	"errors"
+	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"os"
 	"os/exec"
 	"sort"
-	"strconv"
-	"syscall"
 	"time"
 )
 
-var AnswerErr = errors.New("inCorrect")
-var MemoryErr = errors.New("memoryErr")
-var TimeOutErr = errors.New("timeoutErr")
-var RuntimeErr = errors.New("runtimeErr")
-var UnknownErr = errors.New("unknownErr")
+const (
+	CompileErr = 1
+	AnswerErr  = 2
+	MemoryErr  = 3
+	TimeOutErr = 4
+	RuntimeErr = 5
+	UnknownErr = 6
+)
 
-type Output struct {
-	caseNum string
-	Result  []byte
-	time    time.Duration
-	Errors  error
+type rType struct {
+	CaseNum int
+	Type    string
+	Result  string
+	Reason  string
+	Time    string
+	Memory  int
+}
+
+func NewrType(data interface{}) *rType {
+	switch data.(type) {
+	case *rOut:
+		d := data.(*rOut)
+		return &rType{
+			CaseNum: d.CaseNum(),
+			Type:    "output",
+			Result:  string(d.result),
+			Time:    d.Time().String(),
+			Memory:  d.Memory(),
+		}
+	case *rErr:
+		d := data.(*rErr)
+		return &rType{
+			CaseNum: d.CaseNum(),
+			Type:    "error",
+			Reason:  d.errType,
+			Result:  d.Error(),
+		}
+	}
+
+	return nil
 }
 
 func (w Work) getCmd() *exec.Cmd {
@@ -44,117 +71,7 @@ func (w *Work) killProcess(cmdList []*exec.Cmd) {
 	}
 }
 
-func (w *Work) execution(mode int) []*Output {
-	cmdList := []*exec.Cmd{}
-	defer w.killProcess(cmdList)
-
-	outputChan := make(chan *Output)
-
-	var caseLength int
-	caseLength = len(w.InputList)
-	for i, inputData := range w.InputList {
-		go func(i int, inputData string) {
-			resultChan := make(chan *Output)
-			cmd := w.getCmd()
-			cmdList = append(cmdList, cmd)
-			go runProcess(cmd, strconv.Itoa(i), []byte(inputData), w, resultChan, mode)
-
-			select {
-			case <-time.After(time.Duration(w.TimeLimit) * time.Millisecond):
-				outputChan <- &Output{
-					strconv.Itoa(i),
-					nil,
-					time.Duration(0),
-					TimeOutErr,
-				}
-			case output := <-resultChan:
-				outputChan <- output
-			}
-		}(i, inputData)
-	}
-
-	var result []*Output
-
-	for i := 0; i < caseLength; i++ {
-		output := <-outputChan
-
-		switch output.Errors {
-		case nil:
-			switch mode {
-			case Practice:
-				result = append(result, output)
-				continue
-			case Actual:
-				if w.ansCompare(output) {
-					result = append(result, output)
-					continue
-				}
-
-				return []*Output{{
-					output.caseNum,
-					nil,
-					time.Duration(0),
-					AnswerErr,
-				}}
-			}
-		default:
-			switch mode {
-			case Practice:
-				result = append(result, output)
-				continue
-			case Actual:
-				return []*Output{output}
-			}
-		}
-	}
-
-	//practice
-	return result
-}
-
-func (w *Work) Run(mode int) (string, error) {
-	defer os.RemoveAll(w.binaryPath)
-
-	_, CompileErr := compile(w)
-	//compile Error
-	if CompileErr != nil {
-		return "", CompileErr
-	}
-
-	outputs := w.execution(mode)
-
-	sort.Slice(outputs, func(i, j int) bool {
-		return outputs[i].caseNum < outputs[j].caseNum
-	})
-
-	var result string
-
-	switch mode {
-	case Practice:
-
-		for _, output := range outputs {
-			if output.Errors != nil {
-				result += fmt.Sprintf("case %s : %s\n", output.caseNum, output.Errors.Error())
-			} else {
-				result += fmt.Sprintf("case %s : %s\n", output.caseNum, string(output.Result))
-			}
-		}
-		return result, nil
-	case Actual:
-		for _, output := range outputs {
-			if output.Errors != nil {
-				result += fmt.Sprintf("%s\n", output.Errors.Error())
-			} else {
-				result += fmt.Sprintf("%s %s\n", string(output.Result), output.time)
-			}
-		}
-	}
-
-	return result, nil
-
-}
-
-func runProcess(cmd *exec.Cmd, caseNum string, inputData []byte, w *Work, resultChan chan *Output, mode int) {
+func (w *Work) runProcess(cmd *exec.Cmd, caseNum int, inputData []byte) {
 
 	stdIn, _ := cmd.StdinPipe()
 	stdOut, _ := cmd.StdoutPipe()
@@ -162,72 +79,150 @@ func runProcess(cmd *exec.Cmd, caseNum string, inputData []byte, w *Work, result
 
 	startTime := time.Now()
 	cmd.Start()
-	go memoryCheck(cmd.Process.Pid, caseNum, w.MemLimit, resultChan)
 
+	var mem_r int
+	go runtimeMemoryCheck(cmd.Process.Pid, w.MemLimit, &mem_r, func() {
+		//Memory Err occured
+		w.execResult <- Error(caseNum, MemoryErr)
+	})
+
+	//input data to input stream
 	stdIn.Write(inputData)
 	stdIn.Close()
 
+	//reading stdErr and stdOut
 	errput, err := ioutil.ReadAll(stdErr)
-	output, err := ioutil.ReadAll(stdOut)
-
 	if err != nil {
 		fmt.Println(err.Error())
 	}
-
+	output, err := ioutil.ReadAll(stdOut)
+	if err != nil {
+		fmt.Println(err.Error())
+	}
 	err = cmd.Wait()
 	if err != nil {
-		errput = append(errput, []byte(err.Error())...)
+		errput = []byte(err.Error())
 	}
 	endTime := time.Since(startTime)
 
-	maxrss := cmd.ProcessState.SysUsage().(*syscall.Rusage).Maxrss
-
-	if maxrss > w.MemLimit {
-		resultChan <- &Output{
-			caseNum,
-			nil,
-			time.Duration(0),
-			MemoryErr,
-		}
-	} else if len(output) != 0 {
-		resultChan <- &Output{
-			caseNum,
-			output,
-			endTime,
-			nil,
-		}
-	} else if len(errput) != 0 {
-		resultChan <- &Output{
-			caseNum,
-			errput,
-			time.Duration(0),
-			RuntimeErr,
-		}
-	} else {
-		resultChan <- &Output{
-			caseNum,
-			nil,
-			time.Duration(0),
-			UnknownErr,
-		}
+	//Has the process make a error?
+	if len(errput) != 0 {
+		w.execResult <- Error(caseNum, RuntimeErr)
+		return
 	}
+
+	//has the process success to run?
+	if len(output) != 0 {
+		w.execResult <- Output(caseNum, output, endTime, mem_r)
+		return
+	}
+
+	//Unknown error
+	w.execResult <- Error(caseNum, UnknownErr)
 }
 
-func memoryCheck(pid int, caseNum string, memLimit int64, memoryChan chan *Output) {
+func (w *Work) execution(caseNum int, inputData string) {
+	cmd := w.getCmd()
+	w.cmdList = append(w.cmdList, cmd)
+
+	go w.runProcess(cmd, caseNum, []byte(inputData))
+
+	//Timeout
+	<-time.After(time.Duration(w.TimeLimit) * time.Millisecond)
+	w.execResult <- Error(caseNum, TimeOutErr)
+}
+
+func (w *Work) marking() (interface{}, *rErr) {
+	var resultArr []interface{}
+
+	for i := 0; i < len(w.InputList); i++ {
+		result := <-w.execResult
+
+		switch result.(type) {
+		case *rOut:
+			if w.Mode == Practice {
+				resultArr = append(resultArr, result)
+				continue
+			}
+
+			if w.Mode == Actual {
+				if w.ansCompare(result.(rOut)) {
+					resultArr = append(resultArr, result)
+					continue
+				}
+				//Answer is not correct
+				return nil, Error(result.(rOut).CaseNum(), AnswerErr)
+			}
+
+		case *rErr:
+			if w.Mode == Practice {
+				resultArr = append(resultArr, result)
+				continue
+			}
+
+			if w.Mode == Actual {
+				err := result.(rErr)
+				return nil, &err
+			}
+		}
+	}
+
+	return resultArr, nil
+
+}
+
+func (w *Work) getResult() (interface{}, *rErr) {
+	cmdList := []*exec.Cmd{}
+	defer w.killProcess(cmdList)
+
+	for caseNum, caseData := range w.InputList {
+		go w.execution(caseNum, caseData)
+	}
+
+	return w.marking()
+}
+
+func (w *Work) Run() string {
+	defer os.RemoveAll(w.binaryPath)
+
+	var resultArr []*rType
+
+	err := compile(w)
+	//compile Error
+	if err != nil {
+		resultArr = append(resultArr, NewrType(err))
+		jsonData, _ := json.MarshalIndent(resultArr, "", "    ")
+		return string(jsonData)
+	}
+
+	out, err := w.getResult()
+
+	for _, r := range out.([]interface{}) {
+		resultArr = append(resultArr, NewrType(r))
+	}
+
+	sort.Slice(resultArr, func(i, j int) bool {
+		return resultArr[i].CaseNum < resultArr[j].CaseNum
+	})
+
+	r, _ := json.MarshalIndent(resultArr, "", "    ")
+	return string(r)
+}
+
+//check memory usage in runtime,
+func runtimeMemoryCheck(pid int, memLimit int64, mem_r *int, memErr func()) {
 	for {
 		mem, err := calculateMemory(pid)
 		if err != nil {
 			break
 		}
 
+		*mem_r = int(mem)
+
+		//Does the process use more memory than the limit?
 		if mem > memLimit {
-			memoryChan <- &Output{
-				caseNum,
-				[]byte("memory error"),
-				time.Duration(0),
-				MemoryErr,
-			}
-			break
+			memErr()
+			return
 		}
 		time.Sleep(100 * time.Millisecond)
 	}

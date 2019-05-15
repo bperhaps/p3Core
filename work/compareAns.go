@@ -3,13 +3,12 @@ package work
 import (
 	"bytes"
 	"crypto/sha256"
-	"strconv"
 )
 
-func (w Work) ansCompare(output *Output) bool {
+func (w Work) ansCompare(output rOut) bool {
 
-	caseNum, _ := strconv.Atoi(output.caseNum)
-	userAns := output.Result
+	caseNum := output.CaseNum()
+	userAns := output.Result()
 
 	ans := []byte(w.OutputList[caseNum])
 

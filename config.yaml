@@ -1,0 +1,15 @@
+general:
+  debug : False
+
+  practice:
+      timeout : 5s
+
+compileOptions:
+  c:
+    compiler: gcc
+    arg:
+      - Wno
+      - O2
+  c++:
+    compiler: gpp
+    arg:

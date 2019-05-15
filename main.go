@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"p3Core/work"
 )
 
@@ -17,14 +16,10 @@ func main() {
 		"memLimit" : 3000,
 		"timeLimit" : 2000,
 		"inputList" : ["1", "2", "3"],
-		"outputList" : ["7", "7", "7"]
+		"outputList" : ["7", "7", "7"],
+		"mode" : 1
 	}`))
-	r, err := w.Run(work.Practice)
-
-	if err != nil {
-		fmt.Println(err.Error())
-		os.Exit(0)
-	}
+	r := w.Run()
 
 	fmt.Println(r)
 }
